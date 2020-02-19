@@ -1,0 +1,2 @@
+# esp_stepper.ino build property overrides
+#
