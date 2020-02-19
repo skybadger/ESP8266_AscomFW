@@ -1,7 +1,50 @@
 #if !defined _FWEEPROM_H_
 #define _FWEEPROM_H_
+void setDefaults(void );
 void saveToEeprom( void );
 void setupFromEeprom( void );
+
+void setDefaults()
+{
+  int i=0;
+  DEBUGSL1( "setDefaults: entered");
+  
+  //hostname, wheelname is assumed to be the same as hostname
+  hostname = (char*) calloc( sizeof(char), MAX_NAME_LENGTH );
+  memcpy( hostname, defaultHostname, MAX_NAME_LENGTH * sizeof(char) );
+  DEBUGS1( "hostname:  ");DEBUGSL1( hostname );
+  
+  wheelName = (char*) calloc( sizeof(char), MAX_NAME_LENGTH );
+  memcpy( wheelName, defaultHostname, MAX_NAME_LENGTH * sizeof(char) );
+  DEBUGS1( "wheelName:  ");DEBUGSL1(  wheelName );
+
+  thisID = (char*) calloc( sizeof(char), MAX_NAME_LENGTH );
+  memcpy( thisID, defaultHostname, MAX_NAME_LENGTH * sizeof(char) );
+  DEBUGS1( "MQTT ID:  ");DEBUGSL1( thisID );
+    
+  //filternames and filter offsets
+  filterNames = (char**) calloc( sizeof(char*), (unsigned) defaultFiltersPerWheel );
+  focusOffsets = (int*)  calloc( sizeof(int),   (unsigned) defaultFiltersPerWheel );
+  filterPositions = (int*) calloc( sizeof(int), (unsigned) defaultFiltersPerWheel );
+  for ( i=0; i< defaultFiltersPerWheel ; i++ )
+  {
+    filterNames[i] = (char*) malloc( sizeof(char) * MAX_NAME_LENGTH);
+    focusOffsets[i] = 0;
+    filterPositions[i] = i* ((2048)/defaultFiltersPerWheel);
+    String thing = "filter_";
+    thing.concat(i);
+    memcpy( filterNames[i], thing.c_str(), thing.length() * sizeof(char) );
+    DEBUGS1( "setDefaults: filterNames ");
+    DEBUGSL1(  filterNames[i] );
+    DEBUGS1( "setDefaults: filterOffsets ");
+    DEBUGSL1( focusOffsets[i] );
+    DEBUGS1( "setDefaults: filterPositions: ");
+    DEBUGSL1( filterPositions[i] );
+
+  }
+  
+ DEBUGSL1( "setDefaults: exiting" );
+}
 
 void saveToEeprom( void )
 {

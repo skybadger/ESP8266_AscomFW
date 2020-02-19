@@ -89,10 +89,12 @@ Clients and drivers must expect incoming API parameter keys to have any casing.
 #include <ESP8266WiFiGeneric.h>
 //https://links2004.github.io/Arduino/d3/d58/class_e_s_p8266_web_server.html
 #include <ESP8266WebServer.h>
+#include <ESP8266HTTPUpdateServer.h>
 #include <ArduinoJson.h>
 #include <EEPROM.h>
 #include <EEPROMAnything.h>
 #include "JSONHelperFunctions.h"
+#include <GDBStub.h> //Debugging stub for GDB
 
 //Ntp dependencies - available from v2.4
 #include <time.h>
@@ -111,7 +113,7 @@ const int MAX_NAME_LENGTH  = 25;
 const int MAX_FILTER_COUNT = 10;
 
 //Setup the network characteristics
-#include "skybadger_strings.h"
+#include "SkybadgerStrings.h"
 const char defaultHostname[MAX_NAME_LENGTH] = "espFwl01";
 char* hostname = NULL;
 char* thisID = NULL;
@@ -164,14 +166,17 @@ int16_t home = 0;
 // Create an instance of the server
 // specify the port to listen on as an argument
 ESP8266WebServer server(80);
+ESP8266HTTPUpdateServer updater;
 
 //Hardware device system functions - reset/restart etc
 EspClass device;
-long int nowTime, startTime, indexTime;
 ETSTimer timer;
+ETSTimer timoutTimer;
 
 //local functions
-void onTimer();
+void onTimer(void);
+void onTimeoutTimer(void);
+void backlashCompensate(void);
 void enableStepper( boolean );
 void step( void);
 void setup(void);
@@ -190,69 +195,20 @@ void updateStepDirection(bool direction); //false = 0 = reverse, true = forward 
 void handleRootReset(void);
 void handlerNotFound(void);
 
-void setDefaults()
+void setup_wifi()
 {
-  int i=0;
-  DEBUGSL1( "setDefaults: entered");
-  
-  //hostname, wheelname is assumed to be the same as hostname
-  hostname = (char*) calloc( sizeof(char), MAX_NAME_LENGTH );
-  memcpy( hostname, defaultHostname, MAX_NAME_LENGTH * sizeof(char) );
-  DEBUGS1( "hostname:  ");DEBUGSL1( hostname );
-  
-  wheelName = (char*) calloc( sizeof(char), MAX_NAME_LENGTH );
-  memcpy( wheelName, defaultHostname, MAX_NAME_LENGTH * sizeof(char) );
-  DEBUGS1( "wheelName:  ");DEBUGSL1(  wheelName );
-
-  thisID = (char*) calloc( sizeof(char), MAX_NAME_LENGTH );
-  memcpy( thisID, defaultHostname, MAX_NAME_LENGTH * sizeof(char) );
-  DEBUGS1( "MQTT ID:  ");DEBUGSL1( thisID );
-    
-  //filternames and filter offsets
-  filterNames = (char**) calloc( sizeof(char*), (unsigned) defaultFiltersPerWheel );
-  focusOffsets = (int*)  calloc( sizeof(int),   (unsigned) defaultFiltersPerWheel );
-  filterPositions = (int*) calloc( sizeof(int), (unsigned) defaultFiltersPerWheel );
-  for ( i=0; i< defaultFiltersPerWheel ; i++ )
-  {
-    filterNames[i] = (char*) malloc( sizeof(char) * MAX_NAME_LENGTH);
-    focusOffsets[i] = 0;
-    filterPositions[i] = i* ((2048)/defaultFiltersPerWheel);
-    String thing = "filter_";
-    thing.concat(i);
-    memcpy( filterNames[i], thing.c_str(), thing.length() * sizeof(char) );
-    DEBUGS1( "setDefaults: filterNames ");
-    DEBUGSL1(  filterNames[i] );
-    DEBUGS1( "setDefaults: filterOffsets ");
-    DEBUGSL1( focusOffsets[i] );
-    DEBUGS1( "setDefaults: filterPositions: ");
-    DEBUGSL1( filterPositions[i] );
-
-  }
-  
- DEBUGSL1( "setDefaults: exiting" );
-}
-
-void setup()
-{
-  int i=0;
-  // put your setup code here, to run once:
-  Serial.begin( 115200, SERIAL_8N1, SERIAL_TX_ONLY);
-  Serial.println();
-  Serial.println("ESP stepper starting:uses step and direction only.");
-
-  EEPROM.begin(512);
-  
-  setupFromEeprom();
-  
   //Setup Wifi
+  int zz = 0;
   WiFi.mode(WIFI_STA);
   WiFi.hostname(hostname);
   WiFi.begin( ssid1, password1 );
   Serial.print("Connecting");
   while (WiFi.status() != WL_CONNECTED) 
   {
-    delay(500);//This delay is essentially for the DHCP response. Shouldn't be required for static config.
+    delay(500);//Thisdelay is essentially for the DHCP response. Shouldn't be required for static config.
     Serial.print(".");
+    if ( zz++ > 400 )
+       device.restart();
   }
     //WiFi.setDNS( badgerDNS, gatewayDNS );
   Serial.println("WiFi connected");
@@ -262,7 +218,33 @@ void setup()
   Serial.printf("DNS address 0: %s\n\r",  WiFi.dnsIP(0).toString().c_str() );
   Serial.printf("DNS address 1: %s\n\r",  WiFi.dnsIP(1).toString().c_str() );
   Serial.println();
+
+  //Setup sleep parameters
+  //WiFi.mode(WIFI_NONE_SLEEP);
+  //wifi_set_sleep_type(LIGHT_SLEEP_T);
+  wifi_set_sleep_type(NONE_SLEEP_T);
+
+}
+
+void setup()
+{
+  int i=0;
   
+  // put your setup code here, to run once:
+  Serial.begin( 115200, SERIAL_8N1, SERIAL_TX_ONLY);
+  Serial.println();
+  Serial.println("ESP stepper starting:uses step and direction only.");
+  gdbstub_init();
+
+  delay(2000);
+  //Start NTP client
+  configTime(TZ_SEC, DST_SEC, timeServer1, timeServer2, timeServer3 );
+
+  
+  //Read stored settings
+  EEPROM.begin(512);  
+  setupFromEeprom();
+   
   //filterwheel hardware setup
   pinMode(DIRN_PIN, OUTPUT);
   pinMode(STEP_PIN, OUTPUT);
@@ -270,6 +252,8 @@ void setup()
   digitalWrite( DIRN_PIN, DIRN_CW );
   digitalWrite( STEP_PIN, LOW);
   digitalWrite( ENABLE_PIN, HIGH); //Active low.
+
+  setup_wifi();
   
   //Web server handler functions 
   server.onNotFound(handlerNotFound);
@@ -306,13 +290,13 @@ void setup()
   
   //setup interrupt-based 'soft' alarm handler for software stepping
   ets_timer_setfn( &timer, onTimer, NULL ); 
+  ets_timer_setfn( &timeoutTImer, onTimeoutTimer, NULL ); 
   //ets_timer_arm_new( &timer, 4000, 1/*repeat*/, 0);//the last arg indicates usecs(1)  rather than msecs (0). 
-
-  //Setup sleep parameters
-  wifi_set_sleep_type(LIGHT_SLEEP_T);
  
   //Start web server
+  updater.setup( &server);
   server.begin();
+
   DEBUGSL1( "setup complete");
 }
 
@@ -333,10 +317,10 @@ void pulseCounter(void)
  }
 }
 
-//Interrupt handler for timer 2 'hard' timing method
-void onTimer2( void )
+//Interrupt handler for async event timer
+void onTimeoutTimer( void )
 {
-  t2Flag++;
+  timeoutFlag = true;
 }
 
 void onTimer( void* pArg )
@@ -345,29 +329,6 @@ void onTimer( void* pArg )
 	  stepFlag++;
   else 
 	  stepFlag = 1;
-}
-
-void backlashCompensate()
-{
-  /*
-   * The point of backlash compensation is to always come at the final position from the same direction. 
-   * So we overshoot or undershoot by the backlash amount to ensure approaching from the same direction.
-   */
-  if (backlashEnabled)
-  {
-    if( stepDirn == DIRN_CW )
-    {
-      targetDistance -= backlash;
-      stepDirn = DIRN_CCW;
-    }
-    else
-    {
-      targetDistance -= backlash;
-      stepDirn = DIRN_CCW;
-    }
-    targetDistance += stepsPerRevolution;
-    targetDistance = targetDistance % stepsPerRevolution;
-  }
 }
 
 void loop()
@@ -445,6 +406,7 @@ void loop()
   server.handleClient();
  }
 
+
   void enableStepper( boolean enable )
   {
       DEBUGSL1("------------------------------------");
@@ -505,6 +467,29 @@ void loop()
   	digitalWrite(DIRN_PIN, direction );
   	delayMicroseconds(200);
   }
+
+void backlashCompensate()
+{
+  /*
+   * The point of backlash compensation is to always come at the final position from the same direction. 
+   * So we overshoot or undershoot by the backlash amount to ensure approaching from the same direction.
+   */
+  if (backlashEnabled)
+  {
+    if( stepDirn == DIRN_CW )
+    {
+      targetDistance -= backlash;
+      stepDirn = DIRN_CCW;
+    }
+    else
+    {
+      targetDistance -= backlash;
+      stepDirn = DIRN_CCW;
+    }
+    targetDistance += stepsPerRevolution;
+    targetDistance = targetDistance % stepsPerRevolution;
+  }
+}
   
 /*
  * Reset the device - Non-ASCOM call
