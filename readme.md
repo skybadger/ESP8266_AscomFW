@@ -11,7 +11,10 @@
  All Can_ requests don't need the requesting client to be the one that set connected to be 'true' <br>
  All functions that change the state of the filter wheel check that the requestor is the one that has set connected to 'true'.<br>
  The filter wheel will not respond to other clients until connected has been set to false by the one currently in control.<br>
- 
+ The number of filter slots is programable up to 12 ( you can chnage that if you likeaand can also be chnaged in operation. 
+ Filter names and offsets are supported. 
+ Filterwheel uses a minmum distance algorithm to move tothe target location . 
+ Homing is not supported with external encoding but uses stepper 0 reading. 
  <h3>Testing:</h3>
  All urls in lower case. <br>
  All properties need case-matching - typically Upper Camel Case. Until fixed. <br>
